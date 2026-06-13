@@ -2,6 +2,8 @@ import streamlit as st
 import fitz
 import google.generativeai as genai
 import os
+import faiss
+import numpy as np
 
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
@@ -16,6 +18,9 @@ if "chunks" not in st.session_state:
 
 if "embeddings" not in st.session_state:
     st.session_state.embeddings = None
+
+if "faiss_index" not in st.session_state:
+    st.session_state.faiss_index = None
 
 if "pdf_name" not in st.session_state:
     st.session_state.pdf_name = None
@@ -134,6 +139,8 @@ if uploaded_file:
         filetype="pdf"
     )
 
+    total_pages = len(doc)
+
     # Extract text
     text = ""
 
@@ -141,13 +148,6 @@ if uploaded_file:
 
         text += page.get_text()
 
-    # Text Stats
-    st.subheader("Text Statistics")
-
-    st.write(
-        "Total Characters:",
-        len(text)
-    )
 
     # Chunking
     chunks = create_chunks(text)
@@ -158,28 +158,46 @@ if uploaded_file:
     )
 
     # Generate Embeddings
-    with st.spinner(
-        "Generating embeddings..."
-    ):
+    # with st.spinner(
+    #     "Generating embeddings..."
+    # ):
 
-        if st.session_state.pdf_name != uploaded_file.name:
+    if st.session_state.pdf_name != uploaded_file.name:
 
-            chunks = create_chunks(text)
+        chunks = create_chunks(text)
 
-            chunk_embeddings = embedding_model.encode(
-                chunks,
-                batch_size=32,
-                convert_to_tensor=True
-            )
+        chunk_embeddings = embedding_model.encode(
+            chunks,
+            batch_size=32,
+            convert_to_tensor=True
+        )
 
-            st.session_state.chunks = chunks
-            st.session_state.embeddings = chunk_embeddings
-            st.session_state.pdf_name = uploaded_file.name
+        st.session_state.chunks = chunks
+        st.session_state.embeddings = chunk_embeddings
+        st.session_state.pdf_name = uploaded_file.name
 
-        else:
+    else:
 
-            chunks = st.session_state.chunks
-            chunk_embeddings = st.session_state.embeddings
+        chunks = st.session_state.chunks
+        chunk_embeddings = st.session_state.embeddings
+
+    #FAISS INDEX
+    embeddings_np = chunk_embeddings.cpu().numpy()
+
+    dimension = embeddings_np.shape[1]
+
+    if st.session_state.faiss_index is None:
+
+        index = faiss.IndexFlatIP(dimension)
+
+        index.add(embeddings_np)
+
+        st.session_state.faiss_index = index
+
+    else:
+
+        index = st.session_state.faiss_index
+    #st.success("FAISS Index Created")
 
 
     #sidebar
@@ -197,29 +215,40 @@ if uploaded_file:
         st.write(
             f"🧩 Chunks: {len(chunks)}"
         )
-
         st.write(
-            f"🧠 Embeddings: {len(chunk_embeddings)}"
+            f"📖 Total-Pages: {total_pages}"
         )
-        col1, col2, col3 = st.columns(3)
 
-        with col1:
-            st.metric(
-                "Characters",
-                len(text)
-            )
 
-        with col2:
-            st.metric(
-                "Chunks",
-                len(chunks)
-            )
+        #Clear chat button
 
-        with col3:
-            st.metric(
-                "Embeddings",
-                len(chunk_embeddings)
-            )
+        if st.sidebar.button("🗑️ Clear Chat"):
+            st.session_state.messages = []
+
+            st.rerun()
+
+        # st.write(
+        #     f"🧠 Embeddings: {len(chunk_embeddings)}"
+        # )
+        # col1, col2, col3 = st.columns(3)
+        #
+        # with col1:
+        #     st.metric(
+        #         "PDFs",
+        #         uploaded_file.name
+        #     )
+        #
+        # with col2:
+        #     st.metric(
+        #         "Pages",
+        #         total_pages
+        #     )
+        #
+        # with col3:
+        #     st.metric(
+        #         "Chunks",
+        #         len(chunks)
+        #     )
 
 
     #chat history
@@ -258,36 +287,34 @@ if uploaded_file:
 
         # Question Embedding
         question_embedding = embedding_model.encode(
-            question,
-            convert_to_tensor=True
+            question
         )
 
-        # Similarity Search
-        scores = util.cos_sim(
-            question_embedding,
-            chunk_embeddings
-        )
+        question_embedding = np.array(
+            [question_embedding]
+        ).astype("float32")
 
-        # Top K
-        top_k = min(
+        #FIASS SEARCH
+
+        k = min(
             3,
             len(chunks)
         )
 
-        top_results = scores[0].topk(
-            top_k
+        distances, indices = index.search(
+            question_embedding,
+            k
         )
+        # st.write("Indices:", indices)
+        # st.write("Distances:", distances)
+
 
         # Retrieve Chunks
         retrieved_chunks = []
 
-        for score, idx in zip(
-            top_results.values,
-            top_results.indices
-        ):
-
+        for idx in indices[0]:
             retrieved_chunks.append(
-                chunks[idx.item()]
+                chunks[idx]
             )
 
         # Combine Context
@@ -296,11 +323,11 @@ if uploaded_file:
         )
 
         # Debug View
-        with st.expander(
-            "Retrieved Context"
-        ):
+        SHOW_DEBUG = False
+        if SHOW_DEBUG:
+            with st.expander("Retrieved Context"):
+                st.write(context)
 
-            st.write(context)
 
         # Gemini Prompt
         prompt = f"""
@@ -342,7 +369,6 @@ Answer:
 
         # Final Answer
         st.subheader("Answer")
-
         st.write(
             response.text
         )
