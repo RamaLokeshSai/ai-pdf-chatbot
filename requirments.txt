@@ -1,6 +1,8 @@
 streamlit
 pymupdf
 sentence-transformers
-torch
+faiss-cpu
 google-generativeai
 python-dotenv
+torch
+numpy
