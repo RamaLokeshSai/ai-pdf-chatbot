@@ -1,5 +1,5 @@
 streamlit
-pymupdf
+PyMuPDF
 sentence-transformers
 faiss-cpu
 google-generativeai
